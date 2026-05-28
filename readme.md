@@ -1,15 +1,13 @@
-# Marine Observation Editor - Advanced Features Guide
+# Marine Observation Editor - Features Guide
 
 ## Overview
 
-The **Advanced Marine Observation Editor** allows you to:
+The **Marine Observation Editor** allows you to:
 - ✅ View and browse marine observation images with detections
 - ✅ **Edit existing detections** (change species, confidence, verification status)
 - ✅ **Add new detections** by drawing bounding boxes on images
 - ✅ **Delete incorrect detections**
 - ✅ **Save all changes back to NetCDF files**
-
-This is perfect for data validation, correction, and annotation workflows.
 
 ---
 
