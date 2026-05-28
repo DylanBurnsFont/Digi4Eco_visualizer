@@ -26,7 +26,7 @@ python3 web_server.py
 You should see:
 ```
 ============================================================
-Marine Observation Editor - Advanced
+Marine Observation Editor
 ============================================================
 
 ✓ Starting server...
