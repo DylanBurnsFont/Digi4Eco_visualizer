@@ -17,9 +17,9 @@ from datetime import datetime, timezone
 import tempfile
 import os
 import json
-import urllib.request
 import io
 import traceback
+import time
 
 app = Flask(__name__)
 
@@ -33,26 +33,123 @@ _worms_session = _requests.Session()
 # Simple image proxy endpoint
 @app.route('/api/proxy-image')
 def proxy_image():
-    """Proxy images to bypass CORS issues"""
+    """Proxy images using Range requests to handle server-side truncation"""
     url = request.args.get('url')
     if not url:
         return 'No URL provided', 400
     
+    # First request: get initial data and find total size
     try:
-        # Add timeout and headers
-        req = urllib.request.Request(
+        session = _requests.Session()
+        session.trust_env = False
+        
+        import warnings
+        warnings.filterwarnings('ignore')
+        
+        # Initial request to get size
+        response = session.head(
             url,
-            headers={'User-Agent': 'Mozilla/5.0'}
+            headers={'User-Agent': 'Mozilla/5.0'},
+            timeout=10,
+            verify=False,
+            allow_redirects=True
         )
-        with urllib.request.urlopen(req, timeout=10) as response:
-            image_data = response.read()
-            return send_file(
-                io.BytesIO(image_data),
-                mimetype=response.headers.get('content-type', 'image/jpeg')
-            )
+        response.raise_for_status()
+        
+        total_size = int(response.headers.get('content-length', 0))
+        supports_range = 'accept-ranges' in response.headers and response.headers['accept-ranges'].lower() != 'none'
+        
+        print(f"File size: {total_size} bytes, Range support: {supports_range}")
+        
     except Exception as e:
-        print(f"Proxy error for {url}: {e}")
-        return f'Failed to load image: {str(e)}', 500
+        print(f"HEAD request failed: {e}")
+        total_size = 0
+        supports_range = False
+    
+    # Download the full image, using Range requests if supported
+    image_data = bytearray()
+    
+    if supports_range and total_size > 0:
+        # Use Range requests to fetch in chunks
+        chunk_size = 100000
+        for start in range(0, total_size, chunk_size):
+            end = min(start + chunk_size - 1, total_size - 1)
+            
+            try:
+                session = _requests.Session()
+                session.trust_env = False
+                
+                response = session.get(
+                    url,
+                    headers={
+                        'User-Agent': 'Mozilla/5.0',
+                        'Range': f'bytes={start}-{end}'
+                    },
+                    timeout=15,
+                    verify=False,
+                    allow_redirects=True
+                )
+                
+                if response.status_code in [200, 206]:  # 206 = Partial Content
+                    image_data.extend(response.content)
+                    print(f"Range {start}-{end}: {len(response.content)} bytes")
+                else:
+                    print(f"Range request failed: {response.status_code}")
+                    break
+                    
+            except Exception as e:
+                print(f"Range request {start}-{end} failed: {e}")
+                break
+    else:
+        # Fallback: standard request with retries
+        for attempt in range(5):
+            try:
+                session = _requests.Session()
+                session.trust_env = False
+                
+                response = session.get(
+                    url,
+                    headers={
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+                        'Connection': 'close'
+                    },
+                    timeout=30,
+                    stream=False,
+                    verify=False,
+                    allow_redirects=True
+                )
+                response.raise_for_status()
+                image_data = bytearray(response.content)
+                
+                if len(image_data) > 0:
+                    print(f"✓ Got {len(image_data)} bytes on attempt {attempt + 1}")
+                    break
+                    
+            except Exception as e:
+                print(f"Attempt {attempt + 1}: {str(e)[:80]}")
+                if attempt < 4:
+                    time.sleep(1)
+    
+    if image_data:
+        try:
+            # Verify it's valid image data
+            session = _requests.Session()
+            response = session.head(url, timeout=5, verify=False)
+            content_type = response.headers.get('content-type', 'image/jpeg')
+            
+            print(f"→ Returning {len(image_data)} bytes as {content_type}")
+            return send_file(
+                io.BytesIO(bytes(image_data)),
+                mimetype=content_type
+            )
+        except Exception as e:
+            print(f"Error getting content-type: {e}")
+            return send_file(
+                io.BytesIO(bytes(image_data)),
+                mimetype='image/jpeg'
+            )
+    
+    return 'Failed to load image', 500
 
 # WoRMS species name suggestion endpoint
 @app.route('/api/worms-lsid')
