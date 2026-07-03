@@ -1,6 +1,4 @@
-#!/usr/bin/env python3
 """
-Advanced Marine Observation Viewer with Image Proxy Support
 Allows users to view/edit detections and save changes to NetCDF files.
 Includes image proxy to handle CORS issues.
 
@@ -26,7 +24,7 @@ app = Flask(__name__)
 # Server-side cache: maps file_id -> temp file path of the uploaded NetCDF
 _netcdf_cache = {}
 
-# WoRMS LSID cache + persistent session (mirrors inference.py)
+# WoRMS LSID cache
 _worms_cache = {}
 _worms_session = _requests.Session()
 
@@ -616,9 +614,86 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
             letter-spacing: 0.05em;
             pointer-events: none;
         }
+
+        /* Custom Modal Dialog */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.7);
+            z-index: 2000;
+            align-items: center;
+            justify-content: center;
+        }
+        .modal-overlay.active {
+            display: flex;
+        }
+        .modal-dialog {
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 0.75rem;
+            padding: 2rem;
+            max-width: 400px;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.3);
+        }
+        .modal-title {
+            font-size: 1.25rem;
+            font-weight: 600;
+            color: #f1f5f9;
+            margin-bottom: 1rem;
+        }
+        .modal-message {
+            font-size: 0.95rem;
+            color: #cbd5e1;
+            margin-bottom: 1.5rem;
+            line-height: 1.5;
+        }
+        .modal-buttons {
+            display: flex;
+            gap: 0.75rem;
+            justify-content: flex-end;
+        }
+        .modal-btn {
+            padding: 0.5rem 1rem;
+            border: none;
+            border-radius: 0.375rem;
+            font-weight: 500;
+            cursor: pointer;
+            font-size: 0.875rem;
+            transition: all 0.2s;
+        }
+        .modal-btn-cancel {
+            background: #334155;
+            color: #e2e8f0;
+        }
+        .modal-btn-cancel:hover {
+            background: #475569;
+        }
+        .modal-btn-confirm {
+            background: #dc2626;
+            color: #ffffff;
+        }
+        .modal-btn-confirm:hover {
+            background: #b91c1c;
+        }
     </style>
 </head>
 <body>
+    <!-- Confirmation Modal -->
+    <div id="confirmModal" class="modal-overlay">
+        <div class="modal-dialog">
+            <div class="modal-title" id="modalTitle">Confirm</div>
+            <div class="modal-message" id="modalMessage">Are you sure?</div>
+            <div class="modal-buttons">
+                <button class="modal-btn modal-btn-cancel" onclick="closeConfirmModal()">Cancel</button>
+                <button class="modal-btn modal-btn-confirm" id="modalConfirmBtn" onclick="confirmModalAction()">Delete</button>
+            </div>
+        </div>
+    </div>
+
     <div class="container">
         <div class="header">
             <h1>Marine Observation Editor</h1>
@@ -690,6 +765,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
 
                     <div style="margin-top: 1rem;">
                         <button class="btn-success" onclick="downloadModifiedNetCDF()" style="width: 100%;">💾 Save as NetCDF</button>
+                        <button class="btn-danger" onclick="deleteCurrentImage()" style="width: 100%; margin-top: 0.5rem;" title="Keyboard shortcut: D">🗑️ Delete Image & Detections</button>
                     </div>
                 </div>
 
@@ -750,6 +826,16 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                         </button>
                     </div>
 
+                    <div class="sidebar-panel">
+                        <div class="sidebar-title">⌨️ Keyboard Shortcuts</div>
+                        <div style="font-size: 0.75rem; color: #cbd5e1; line-height: 1.6;">
+                            <div><strong>←/→</strong> Previous/Next image</div>
+                            <div><strong>D</strong> Delete current image</div>
+                            <div><strong>Enter</strong> Confirm deletion</div>
+                            <div><strong>Esc</strong> Close dialog</div>
+                        </div>
+                    </div>
+
                     <div class="stats" id="stats"></div>
                 </div>
             </div>
@@ -769,6 +855,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         let currentImageUrl = null;
         let lastUsedSpecies = '';
         let lastUsedSpeciesLsid = '';
+        let pendingDeleteCallback = null;
 
         function showError(msg) {
             const el = document.getElementById('errorMessage');
@@ -782,6 +869,29 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
             el.textContent = msg;
             el.classList.add('active');
             setTimeout(() => el.classList.remove('active'), 5000);
+        }
+
+        function showConfirmModal(title, message, callback) {
+            document.getElementById('modalTitle').textContent = title;
+            document.getElementById('modalMessage').textContent = message;
+            pendingDeleteCallback = callback;
+            document.getElementById('confirmModal').classList.add('active');
+            
+            // Focus the confirm button and handle Enter key
+            const confirmBtn = document.getElementById('modalConfirmBtn');
+            setTimeout(() => confirmBtn.focus(), 100);
+        }
+
+        function closeConfirmModal() {
+            document.getElementById('confirmModal').classList.remove('active');
+            pendingDeleteCallback = null;
+        }
+
+        function confirmModalAction() {
+            if (pendingDeleteCallback) {
+                pendingDeleteCallback();
+            }
+            closeConfirmModal();
         }
 
         async function handleNetCDFUpload(event) {
@@ -1086,6 +1196,56 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
             showSuccess('✓ Detection deleted');
         }
 
+        function deleteCurrentImage() {
+            if (currentIndex < 0) return;
+
+            const current = filteredData[currentIndex];
+            const imageUrl = current.url;
+            
+            // Show confirmation modal with callback
+            showConfirmModal(
+                '🗑️ Delete Image?',
+                `Are you sure you want to delete this image and all its ${(current.detections || []).length} detections/bounding boxes? This cannot be undone.`,
+                () => {
+                    // This is the callback that runs if user confirms
+                    // Mark as modified
+                    current.modified = true;
+                    
+                    // Remove the image from allData
+                    const allIndex = allData.findIndex(d => d.url === imageUrl);
+                    if (allIndex >= 0) {
+                        allData.splice(allIndex, 1);
+                    }
+
+                    // Remove from filteredData
+                    filteredData.splice(currentIndex, 1);
+
+                    // Update currentIndex
+                    if (filteredData.length === 0) {
+                        currentIndex = -1;
+                        selectedDetectionIndex = -1;
+                        currentImageObj = null;
+                        currentImageUrl = null;
+                    } else if (currentIndex >= filteredData.length) {
+                        // If we deleted the last image, go to the new last image
+                        currentIndex = filteredData.length - 1;
+                        selectedDetectionIndex = -1;
+                        currentImageObj = null;
+                        currentImageUrl = null;
+                    } else {
+                        // Keep currentIndex the same — the next image has shifted into this position
+                        selectedDetectionIndex = -1;
+                        currentImageObj = null;
+                        currentImageUrl = null;
+                    }
+
+                    updateUI();
+                    updateStats();
+                    showSuccess(`✓ Image deleted (${filteredData.length} remaining)`);
+                }
+            );
+        }
+
         function enableDrawingMode() {
             drawingMode = true;
             document.getElementById('instructions').classList.add('active');
@@ -1206,10 +1366,42 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         }
 
         document.addEventListener('keydown', (e) => {
+            const modal = document.getElementById('confirmModal');
+            const isModalOpen = modal.classList.contains('active');
+            
+            // Handle modal keyboard shortcuts
+            if (isModalOpen) {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    confirmModalAction();
+                    return;
+                }
+                if (e.key === 'Escape') {
+                    closeConfirmModal();
+                    return;
+                }
+            }
+            
+            // Close modal with Escape key
+            if (e.key === 'Escape') {
+                if (modal.classList.contains('active')) {
+                    closeConfirmModal();
+                    return;
+                }
+            }
+            
             // Don't trigger navigation when typing in an input/select
             if (['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement.tagName)) return;
             if (e.key === 'ArrowLeft') previousImage();
             else if (e.key === 'ArrowRight') nextImage();
+            else if (e.key === 'd' || e.key === 'D') deleteCurrentImage();
+        });
+
+        // Close modal when clicking outside the dialog
+        document.getElementById('confirmModal').addEventListener('click', (e) => {
+            if (e.target.id === 'confirmModal') {
+                closeConfirmModal();
+            }
         });
 
         // WoRMS autocomplete
