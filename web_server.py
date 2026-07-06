@@ -830,6 +830,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                         <div class="sidebar-title">⌨️ Keyboard Shortcuts</div>
                         <div style="font-size: 0.75rem; color: #cbd5e1; line-height: 1.6;">
                             <div><strong>←/→</strong> Previous/Next image</div>
+                            <div><strong>N</strong> Draw detection</div>
                             <div><strong>D</strong> Delete current image</div>
                             <div><strong>Enter</strong> Confirm deletion</div>
                             <div><strong>Esc</strong> Close dialog</div>
@@ -1248,7 +1249,15 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
 
         function enableDrawingMode() {
             drawingMode = true;
-            document.getElementById('instructions').classList.add('active');
+            const instructionsEl = document.getElementById('instructions');
+            instructionsEl.classList.add('active');
+            
+            // Auto-hide instructions after 1 second to avoid blocking the image
+            setTimeout(() => {
+                if (drawingMode) {
+                    instructionsEl.classList.remove('active');
+                }
+            }, 1000);
 
             const canvas = document.getElementById('canvas');
             canvas.style.cursor = 'crosshair';
@@ -1395,6 +1404,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
             if (e.key === 'ArrowLeft') previousImage();
             else if (e.key === 'ArrowRight') nextImage();
             else if (e.key === 'd' || e.key === 'D') deleteCurrentImage();
+            else if (e.key === 'n' || e.key === 'N') enableDrawingMode();
         });
 
         // Close modal when clicking outside the dialog
