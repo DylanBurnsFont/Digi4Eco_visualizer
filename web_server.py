@@ -64,88 +64,83 @@ def proxy_image():
         total_size = 0
         supports_range = False
     
-    # Download the full image, using Range requests if supported
-    image_data = bytearray()
-    
-    if supports_range and total_size > 0:
-        # Use Range requests to fetch in chunks
-        chunk_size = 100000
-        for start in range(0, total_size, chunk_size):
-            end = min(start + chunk_size - 1, total_size - 1)
+    # Download the image - stream it back to client immediately to avoid buffering
+    try:
+        if supports_range and total_size > 0:
+            # For ranged requests, buffer only one chunk at a time
+            def generate():
+                chunk_size = 256000  # 256KB chunks instead of 100KB
+                for start in range(0, total_size, chunk_size):
+                    end = min(start + chunk_size - 1, total_size - 1)
+                    try:
+                        session = _requests.Session()
+                        session.trust_env = False
+                        response = session.get(
+                            url,
+                            headers={
+                                'User-Agent': 'Mozilla/5.0',
+                                'Range': f'bytes={start}-{end}'
+                            },
+                            timeout=15,
+                            verify=False,
+                            allow_redirects=True
+                        )
+                        if response.status_code in [200, 206]:
+                            yield response.content
+                            print(f"Range {start}-{end}: {len(response.content)} bytes")
+                        else:
+                            print(f"Range request failed: {response.status_code}")
+                            break
+                    except Exception as e:
+                        print(f"Range request {start}-{end} failed: {e}")
+                        break
             
+            # Get content type
+            content_type = 'image/jpeg'
             try:
                 session = _requests.Session()
-                session.trust_env = False
+                response = session.head(url, timeout=5, verify=False)
+                content_type = response.headers.get('content-type', 'image/jpeg')
+            except:
+                pass
                 
-                response = session.get(
-                    url,
-                    headers={
-                        'User-Agent': 'Mozilla/5.0',
-                        'Range': f'bytes={start}-{end}'
-                    },
-                    timeout=15,
-                    verify=False,
-                    allow_redirects=True
-                )
-                
-                if response.status_code in [200, 206]:  # 206 = Partial Content
-                    image_data.extend(response.content)
-                    print(f"Range {start}-{end}: {len(response.content)} bytes")
-                else:
-                    print(f"Range request failed: {response.status_code}")
-                    break
-                    
-            except Exception as e:
-                print(f"Range request {start}-{end} failed: {e}")
-                break
-    else:
-        # Fallback: standard request with retries
-        for attempt in range(5):
-            try:
-                session = _requests.Session()
-                session.trust_env = False
-                
-                response = session.get(
-                    url,
-                    headers={
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-                        'Connection': 'close'
-                    },
-                    timeout=30,
-                    stream=False,
-                    verify=False,
-                    allow_redirects=True
-                )
-                response.raise_for_status()
-                image_data = bytearray(response.content)
-                
-                if len(image_data) > 0:
-                    print(f"✓ Got {len(image_data)} bytes on attempt {attempt + 1}")
-                    break
-                    
-            except Exception as e:
-                print(f"Attempt {attempt + 1}: {str(e)[:80]}")
-                if attempt < 4:
-                    time.sleep(1)
-    
-    if image_data:
-        try:
-            # Verify it's valid image data
-            session = _requests.Session()
-            response = session.head(url, timeout=5, verify=False)
-            content_type = response.headers.get('content-type', 'image/jpeg')
-            
-            print(f"→ Returning {len(image_data)} bytes as {content_type}")
-            return send_file(
-                io.BytesIO(bytes(image_data)),
+            return app.response_class(
+                generate(),
                 mimetype=content_type
             )
-        except Exception as e:
-            print(f"Error getting content-type: {e}")
-            return send_file(
-                io.BytesIO(bytes(image_data)),
-                mimetype='image/jpeg'
-            )
+        else:
+            # Fallback: standard request with retries (still stream)
+            for attempt in range(5):
+                try:
+                    session = _requests.Session()
+                    session.trust_env = False
+                    response = session.get(
+                        url,
+                        headers={
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+                            'Connection': 'close'
+                        },
+                        timeout=30,
+                        stream=True,  # Stream instead of buffering
+                        verify=False,
+                        allow_redirects=True
+                    )
+                    response.raise_for_status()
+                    content_type = response.headers.get('content-type', 'image/jpeg')
+                    
+                    print(f"✓ Streaming image on attempt {attempt + 1}")
+                    return app.response_class(
+                        response.iter_content(chunk_size=256000),
+                        mimetype=content_type
+                    )
+                    
+                except Exception as e:
+                    print(f"Attempt {attempt + 1}: {str(e)[:80]}")
+                    if attempt < 4:
+                        time.sleep(1)
+    
+    except Exception as e:
+        print(f"Error in proxy_image: {e}")
     
     return 'Failed to load image', 500
 
@@ -832,6 +827,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                             <div><strong>←/→</strong> Previous/Next image</div>
                             <div><strong>N</strong> Draw detection</div>
                             <div><strong>D</strong> Delete current image</div>
+                            <div><strong>Delete/Q</strong> Delete selected annotation</div>
                             <div><strong>Enter</strong> Confirm deletion</div>
                             <div><strong>Esc</strong> Close dialog</div>
                         </div>
@@ -1021,6 +1017,10 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
             if (!currentImageObj) return;
             const canvas = document.getElementById('canvas');
             const ctx = canvas.getContext('2d');
+            
+            // Explicitly clear the entire context to prevent memory accumulation
+            ctx.reset?.() || ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
             canvas.width = currentImageObj.naturalWidth;
             canvas.height = currentImageObj.naturalHeight;
             ctx.drawImage(currentImageObj, 0, 0);
@@ -1405,6 +1405,11 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
             else if (e.key === 'ArrowRight') nextImage();
             else if (e.key === 'd' || e.key === 'D') deleteCurrentImage();
             else if (e.key === 'n' || e.key === 'N') enableDrawingMode();
+            else if (e.key === 'Delete' || e.key === 'q' || e.key === 'Q') {
+                if (selectedDetectionIndex !== -1) {
+                    deleteDetection();
+                }
+            }
         });
 
         // Close modal when clicking outside the dialog
@@ -1601,10 +1606,10 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
 
         function previousImage() {
             if (currentIndex > 0) {
+                // Clean up image memory before switching
+                cleanupCurrentImage();
                 currentIndex--;
                 selectedDetectionIndex = -1;
-                currentImageObj = null;
-                currentImageUrl = null;
                 resetDrawingMode();
                 updateUI();
             }
@@ -1612,13 +1617,26 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
 
         function nextImage() {
             if (currentIndex < filteredData.length - 1) {
+                // Clean up image memory before switching
+                cleanupCurrentImage();
                 currentIndex++;
                 selectedDetectionIndex = -1;
-                currentImageObj = null;
-                currentImageUrl = null;
                 resetDrawingMode();
                 updateUI();
             }
+        }
+        
+        function cleanupCurrentImage() {
+            // Explicitly release image memory
+            currentImageObj = null;
+            currentImageUrl = null;
+            
+            // Force garbage collection hint by clearing canvas data
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d');
+            ctx.reset?.() || ctx.clearRect(0, 0, canvas.width, canvas.height);
+            canvas.width = 600;
+            canvas.height = 400;
         }
 
         function updateCounter() {
@@ -1629,11 +1647,11 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         function jumpToImage(val) {
             const n = parseInt(val);
             if (isNaN(n)) { document.getElementById('counterInput').value = currentIndex + 1; return; }
-            const idx = Math.max(0, Math.min(filteredData.length - 1, n - 1));
-            currentIndex = idx;
+            if (currentIndex !== Math.max(0, Math.min(filteredData.length - 1, n - 1))) {
+                cleanupCurrentImage();
+            }
+            currentIndex = Math.max(0, Math.min(filteredData.length - 1, n - 1));
             selectedDetectionIndex = -1;
-            currentImageObj = null;
-            currentImageUrl = null;
             resetDrawingMode();
             updateUI();
         }
