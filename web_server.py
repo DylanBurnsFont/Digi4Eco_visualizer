@@ -506,22 +506,28 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         }
 
         .message {
-            padding: 1rem;
+            position: fixed;
+            bottom: 2rem;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 1rem 1.5rem;
             border-radius: 0.5rem;
-            margin-bottom: 1rem;
             font-size: 0.875rem;
             display: none;
+            z-index: 1500;
+            max-width: 90%;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.3);
         }
 
         .message.error {
-            background: rgba(239, 68, 68, 0.1);
-            border: 1px solid rgba(239, 68, 68, 0.3);
+            background: rgba(239, 68, 68, 0.15);
+            border: 1px solid rgba(239, 68, 68, 0.4);
             color: #ef4444;
         }
 
         .message.success {
-            background: rgba(52, 211, 153, 0.1);
-            border: 1px solid rgba(52, 211, 153, 0.3);
+            background: rgba(52, 211, 153, 0.15);
+            border: 1px solid rgba(52, 211, 153, 0.4);
             color: #34d399;
         }
 
@@ -1264,15 +1270,17 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
 
             let startX = 0, startY = 0, drawing = false;
 
-            // Scale CSS pixel position to canvas/image pixel coordinates
+            // Scale CSS pixel position to canvas/image pixel coordinates with clamping
             function toImageCoords(e) {
                 const rect = canvas.getBoundingClientRect();
                 const scaleX = canvas.width / rect.width;
                 const scaleY = canvas.height / rect.height;
-                return {
-                    x: (e.clientX - rect.left) * scaleX,
-                    y: (e.clientY - rect.top) * scaleY
-                };
+                let x = (e.clientX - rect.left) * scaleX;
+                let y = (e.clientY - rect.top) * scaleY;
+                // Clamp to image boundaries
+                x = Math.max(0, Math.min(x, canvas.width));
+                y = Math.max(0, Math.min(y, canvas.height));
+                return { x, y };
             }
 
             canvas.onmousedown = (e) => {
@@ -1283,7 +1291,8 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                 drawing = true;
             };
 
-            canvas.onmousemove = (e) => {
+            // Track mouse movement at document level to handle cursor outside canvas
+            const handleMouseMove = (e) => {
                 if (!drawingMode || !drawing) return;
                 // Redraw from cache — no image reload, no flicker
                 redrawCanvas();
@@ -1302,19 +1311,30 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                 ctx.setLineDash([]);
             };
 
-            canvas.onmouseup = (e) => {
+            const handleMouseUp = (e) => {
                 if (!drawingMode || !drawing) return;
                 const pos = toImageCoords(e);
                 if (Math.abs(pos.x - startX) > 5 && Math.abs(pos.y - startY) > 5) {
                     finishDrawing(startX, startY, pos.x, pos.y);
                 }
                 drawing = false;
+                // Remove document-level listeners
+                document.removeEventListener('mousemove', handleMouseMove);
+                document.removeEventListener('mouseup', handleMouseUp);
             };
 
-            canvas.onmouseleave = () => {
-                drawing = false;
-                redrawCanvas();
+            canvas.onmousedown = (e) => {
+                if (!drawingMode) return;
+                const pos = toImageCoords(e);
+                startX = pos.x;
+                startY = pos.y;
+                drawing = true;
+                // Add document-level listeners to track cursor outside canvas
+                document.addEventListener('mousemove', handleMouseMove);
+                document.addEventListener('mouseup', handleMouseUp);
             };
+
+            canvas.onmousemove = handleMouseMove;
         }
 
         async function finishDrawing(x1, y1, x2, y2) {
